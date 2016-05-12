@@ -82,15 +82,28 @@
   jdyrlandweaver
   ====================*/
 void first_pass() {
-  num_frames = 0;
-  name = "";
+  num_frames = 1;
+  int v = 0;
+  int i;
+  strncpy(name,"",sizeof(name));
   for (i=0;i<lastop;i++) {
       switch (op[i].opcode) {
       case FRAMES:
 	num_frames = op[i].op.frames.num_frames;
+	break;
       case BASENAME:
-	name = op[i].op.basename.p;
+	strcpy(name,op[i].op.basename.p->name);
+	break;
+      case VARY:
+	v++;
+	break;
       }
+  }
+  if (strcmp(name,"")==0){
+    strcpy(name,"default");
+  }
+  if (v>0 && num_frames == 1){
+    num_frames = -1;
   }
 }
 
@@ -117,11 +130,14 @@ void first_pass() {
   jdyrlandweaver
   ====================*/
 struct vary_node ** second_pass() {
-  struct vary_node ** knobs = (vary_node **) malloc(frames * sizeof(struct vary_node *));
-  int i2;
-  int sf, ef, sv, ev;
-  double inc;
+  struct vary_node ** knobs = (struct vary_node **) malloc(num_frames * sizeof(struct vary_node *));
+  int i,i2;
+  int sf, ef;
+  double inc, val,sv,ev;
   char* n;
+  for(i=0;i<num_frames;i++){
+    knobs[i] = NULL;
+  }
   
   for (i=0;i<lastop;i++) {
       switch (op[i].opcode) {
@@ -130,16 +146,36 @@ struct vary_node ** second_pass() {
 	ef = op[i].op.vary.end_frame;
 	sv = op[i].op.vary.start_val;
 	ev = op[i].op.vary.end_val;
-	inc = (double)(ev-sv)/(ef-sf);
-	for(i2=sf;i2<=ef;i2++){
-	  knobs[i2]-> = op[i].op.vary.p
+	val = (double) sv;
+	inc = (double)(ev-sv)/(double)(ef-sf);
+	for(i2=0;i2<num_frames;i2++){
+	  if (i2 > sf && i2 <= ef)
+	    val += inc;
+	  //printf("%d %s %lf",i2,p.name,p.value);
+	  if (knobs[i2]==NULL){
+	    knobs[i2] = (struct vary_node *)malloc(sizeof(struct vary_node));
+	    knobs[i2]->value = val;
+	    strcpy(knobs[i2]->name,op[i].op.vary.p->name);
+	    knobs[i2]->next = NULL;
+	    //printf("done.\n");
+	  } else {
+	    struct vary_node * cur = knobs[i2];
+	    while(cur->next != NULL){
+	      //printf("one.\n");
+	      cur = cur->next;
+	    }
+	    cur->next = (struct vary_node *)malloc(sizeof(struct vary_node));
+	    cur = cur->next;
+	    cur->value = val;
+	    strcpy(cur->name,op[i].op.vary.p->name);
+	    cur->next = NULL;
+	    //printf("alsodone.\n");
+	  }
+	  //printf("%d %s %lf\n",i2,knobs[i2]->name,knobs[i2]->value);
 	}
       }
   }
-}
-
-void add(struct vary_node * linked){
-  
+  return knobs;
 }
 
 /*======== void print_knobs() ==========
@@ -219,8 +255,22 @@ void my_main( int polygons ) {
   g.red = 0;
   g.green = 255;
   g.blue = 255;
-
-    
+  
+  first_pass();
+  knobs = second_pass();
+  if (num_frames == -1)
+    return;
+  
+  for(j=0;j<num_frames;j++){
+    s = new_stack();
+  tmp = new_matrix(4,1000);
+  clear_screen(t);
+    vn = knobs[j];
+    while (vn != NULL){
+      //printf("%d %s %lf\n", j, vn->name, vn->value);
+      lookup_symbol(vn->name)->s.value = vn->value;
+      vn = vn->next;
+    }
     for (i=0;i<lastop;i++) {
   
       switch (op[i].opcode) {
@@ -277,6 +327,12 @@ void my_main( int polygons ) {
 	xval = op[i].op.move.d[0];
 	yval =  op[i].op.move.d[1];
 	zval = op[i].op.move.d[2];
+	if (op[i].op.move.p != NULL){
+	  knob_value = op[i].op.move.p->s.value;
+	  xval *= knob_value;
+	  yval *= knob_value;
+	  zval *= knob_value;
+	}
       
 	transform = make_translate( xval, yval, zval );
 	//multiply by the existing origin
@@ -290,6 +346,12 @@ void my_main( int polygons ) {
 	xval = op[i].op.scale.d[0];
 	yval = op[i].op.scale.d[1];
 	zval = op[i].op.scale.d[2];
+        if (op[i].op.scale.p != NULL){
+	  knob_value = op[i].op.scale.p->s.value;
+	  xval *= knob_value;
+	  yval *= knob_value;
+	  zval *= knob_value;
+	}
       
 	transform = make_scale( xval, yval, zval );
 	matrix_mult( s->data[ s->top ], transform );
@@ -300,6 +362,10 @@ void my_main( int polygons ) {
 
       case ROTATE:
 	xval = op[i].op.rotate.degrees * ( M_PI / 180 );
+        if (op[i].op.rotate.p != NULL){
+	  knob_value = op[i].op.rotate.p->s.value;
+	  xval *= knob_value;
+	}
 
 	//get the axis
 	if ( op[i].op.rotate.axis == 0 ) 
@@ -322,15 +388,23 @@ void my_main( int polygons ) {
 	pop( s );
 	break;
       case SAVE:
+	sprintf(frame_name,"%s_%04d",op[i].op.save.p->name,j);
 	save_extension( t, op[i].op.save.p->name );
 	break;
       case DISPLAY:
 	display( t );
 	break;
+      case AMBIENT:
+	g.red = op[i].op.ambient.c[0];
+	g.green = op[i].op.ambient.c[1];
+	g.blue = op[i].op.ambient.c[2];
       }
     }
-  
+    //print_knobs();
+    sprintf(frame_name,"%s_%04d",name,j);
+    save_extension(t,frame_name);
     free_stack( s );
     free_matrix( tmp );
+  }
     //free_matrix( transform );
 }
